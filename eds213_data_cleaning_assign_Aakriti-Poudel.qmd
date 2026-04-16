@@ -1,0 +1,579 @@
+---
+title: "Week 2 Data Cleaning Assignment"
+subtitle: "Cleaning Water Cover, Land Cover, and Total Cover"
+author: "Aakriti Poudel"
+date: April 12, 2026
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    theme: cosmo
+    highlight-style: github
+    code-fold: false
+    embed-resources: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r}
+#| message: false
+
+# Load packages
+library(tidyverse)
+
+# Folder paths
+datadir_processed <- file.path("data", "processed")
+
+# Input file (Snow_cover already cleaned in class)
+snowsurvey_file <- "snow_cover.csv"
+```
+
+## Water cover data
+
+::: {.callout-note title="Our task"}
+We already cleaned `Snow_cover` in class. Now we clean `Water_cover` and
+`Land_cover` using the same steps, then use the rule that all three covers
+should sum to 100 to fill in missing values and fix `Total_cover`.
+:::
+
+### Data exploration
+
+We start from the `snow_cover.csv` file produced at the end of the class
+session. This file already has `Snow_cover` cleaned and stored as a number,
+so we do not need to touch that column again.
+
+```{r}
+#| message: false
+
+# Read the processed file from class
+snowsurvey_csv <- read_csv(file.path(datadir_processed, snowsurvey_file))
+
+glimpse(snowsurvey_csv)
+```
+
+Looking at the output above, `Water_cover` and `Land_cover` are both read
+as character columns. According to the metadata file `01_ASDN_Readme.txt`,
+these columns are defined as:
+
+- `Water_cover`: percent cover of water
+- `Land_cover`: percent cover of exposed land
+- `Total_cover`: total sum to check the above percents; should always sum to 100
+
+They should be numbers between 0 and 100, so something is preventing R from
+treating them as numeric. Let's find out what:
+
+```{r}
+# Count all unique values in Water_cover
+snowsurvey_csv %>%
+  count(Water_cover)
+```
+
+Let's focus on just the non-numeric values:
+
+```{r}
+# Filter to non-numeric values only
+snowsurvey_csv %>%
+  count(Water_cover) %>%
+  filter(is.na(as.numeric(Water_cover)))
+```
+
+We have 767 rows with non-numeric values across `.`, `-`, `n/a`, and `unk`.
+That is a meaningful number of rows, so we need to handle each one carefully
+before we can convert the column to numeric.
+
+### Data cleaning
+
+We found the same problematic values as in `Snow_cover` during class. The
+metadata does not define any of these symbols as valid values for cover
+columns, so our general decision is to treat them all as missing (NA).
+Below we look at each one in detail before replacing it.
+
+#### `.` values
+
+```{r}
+#| eval: false
+# Inspect rows with a dot
+snowsurvey_csv %>%
+  filter(Water_cover == ".") %>%
+  View()
+```
+
+There are 575 rows with a dot in `Water_cover`. Looking at those rows, the
+`Snow_cover` column was already set to NA during class cleaning, and
+`Land_cover` also has a dot in the same rows. This pattern suggests the
+entire observation was not recorded on that day, not just `Water_cover`.
+The metadata (`01_ASDN_Readme.txt`) defines every column in the Snow_survey
+table but makes no mention of a dot as a valid value for any cover column.
+Because we have no definition for it and no way to recover the true value,
+we treat it as missing and replace it with NA.
+
+```{r}
+# Replace dot with NA -- not defined in metadata
+snowsurvey_fixed <- snowsurvey_csv %>%
+  mutate(Water_cover = ifelse(Water_cover == ".", NA, Water_cover))
+```
+
+#### `-` values
+
+Is the problem similar with `-`?
+
+```{r}
+#| eval: false
+# Inspect rows with a dash
+snowsurvey_csv %>%
+  filter(Water_cover == "-") %>%
+  View()
+```
+
+There are 10 rows with a dash. In those rows, `Land_cover` also has a dash
+and `Snow_cover` is NA. Interestingly, the metadata does define `-` in one
+place: in the color band codes table it means "no bands on this part of the
+leg." However, that definition belongs to a completely different data table
+and has nothing to do with cover percentages. For the Snow_survey table, `-`
+is not defined anywhere. It looks like it was used as a placeholder when no
+value was recorded, the same way some people write a dash in a paper form to
+mean "nothing here." We replace it with NA.
+
+```{r}
+# Replace dash with NA -- not a valid code in metadata
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Water_cover = ifelse(Water_cover == "-", NA, Water_cover))
+```
+
+#### `n/a` values
+
+`n/a` seems pretty clear, but let's have a look first:
+
+```{r}
+#| eval: false
+# Inspect rows with n/a
+snowsurvey_csv %>%
+  filter(Water_cover == "n/a") %>%
+  View()
+```
+
+Same pattern as the dot and dash rows. The metadata does not define `n/a`
+as a valid entry. It almost certainly means "not available", which is just
+another way of saying the value is missing. We replace it with NA.
+
+```{r}
+# Replace n/a with NA -- means not available
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Water_cover = ifelse(Water_cover == "n/a", NA, Water_cover))
+```
+
+#### `unk` values
+
+`unk` is probably short for unknown:
+
+```{r}
+#| eval: false
+# Inspect the row with unk
+snowsurvey_csv %>%
+  filter(Water_cover == "unk") %>%
+  View()
+```
+
+There is only 1 row with `unk`. Looking at it, `Snow_cover` is NA and
+`Land_cover` is also `unk`. The metadata does not mention this code for
+cover columns. Since we do not know the actual value and have no way to
+recover it, we replace it with NA.
+
+```{r}
+# Replace unk with NA -- unknown, no value to work with
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Water_cover = ifelse(Water_cover == "unk", NA, Water_cover))
+```
+
+**Note about `<1`:** In class, `Snow_cover` had a `<1` value. We replaced
+it with `0` because a snow cover of less than 1% is effectively 0 at the
+whole-number scale we are working at. `Water_cover` does not have any `<1`
+values, so we skip that step here.
+
+### Going numeric
+
+Now let's check that only NAs are left as non-numeric values:
+
+```{r}
+# Confirm only NAs remain before converting
+snowsurvey_fixed %>%
+  count(Water_cover) %>%
+  filter(is.na(as.numeric(Water_cover)))
+```
+
+Only NAs remain. We can safely convert the column to numeric now.
+
+```{r}
+# Convert to numeric
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Water_cover = as.numeric(Water_cover))
+```
+
+We have a numeric column now 🎉
+
+### Further cleaning
+
+We are dealing with percentages, so all values must be between 0 and 100.
+Let's check:
+
+```{r}
+# Check for values above 100
+snowsurvey_fixed %>%
+  filter(Water_cover > 100)
+```
+
+There is one row where `Water_cover` is 353. That is clearly not a valid
+percentage. Looking at the full row, `Snow_cover` is 45 and `Land_cover`
+is -298. If you add those three together: 45 + 353 + (-298) = 100, which
+matches the recorded `Total_cover`. This tells us the numbers were probably
+swapped or mistyped during data entry. The true split between water and land
+could be almost anything, so we cannot make a reasonable guess. We set
+`Water_cover` to NA. We will also deal with the `-298` in `Land_cover`
+when we get to that column.
+
+```{r}
+# Set values above 100 to NA
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Water_cover = ifelse(Water_cover > 100, NA, Water_cover))
+```
+
+Let's check for negative values:
+
+```{r}
+# Check for negative values
+snowsurvey_fixed %>%
+  filter(Water_cover < 0)
+```
+
+No negative values in `Water_cover` ✅
+
+Decimal points don't really make sense for a percent cover field survey.
+The metadata defines `Water_cover` as "percent cover of water" but does not
+say whether values should be whole numbers or can have decimals. Looking at
+the unique values, we can see some entries like 0.25, 1.75, etc. Our
+assumption is that these are rounding artifacts from data entry rather than
+intentional precision, because a field observer estimating percent cover by
+eye would not realistically record values like 1.75%. We round to whole
+numbers to be consistent with how most of the data are recorded.
+
+```{r}
+# Check for decimal values before rounding
+unique(snowsurvey_fixed$Water_cover)
+```
+
+```{r}
+# Round to whole numbers
+snowsurvey_fixed$Water_cover <- round(snowsurvey_fixed$Water_cover)
+# Confirm no decimals remain
+unique(snowsurvey_fixed$Water_cover)
+```
+
+---
+
+## Land cover data
+
+### Data exploration
+
+Now let's look at `Land_cover`:
+
+```{r}
+# Filter to non-numeric values only
+snowsurvey_csv %>%
+  count(Land_cover) %>%
+  filter(is.na(as.numeric(Land_cover)))
+```
+
+We have 772 rows with non-numeric values. The same four values appear:
+`.`, `-`, `n/a`, and `unk`. We apply the same decisions as we did for
+`Water_cover` since the reasoning is identical and the metadata gives no
+special meaning to any of these symbols in cover columns.
+
+### Data cleaning
+
+#### `.` values
+
+```{r}
+#| eval: false
+# Inspect rows with a dot
+snowsurvey_csv %>%
+  filter(Land_cover == ".") %>%
+  View()
+```
+
+There are 585 rows with a dot in `Land_cover`. As with `Water_cover`, the
+dot rows also have dots or NAs in the other cover columns. No value was
+recorded for the whole survey on those days. We replace with NA.
+
+```{r}
+# Replace dot with NA -- not defined in metadata
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Land_cover = ifelse(Land_cover == ".", NA, Land_cover))
+```
+
+#### `-` values
+
+```{r}
+#| eval: false
+# Inspect rows with a dash
+snowsurvey_csv %>%
+  filter(Land_cover == "-") %>%
+  View()
+```
+
+Same pattern as `Water_cover`. Ten rows, all with dashes or NAs across the
+cover columns. We replace with NA.
+
+```{r}
+# Replace dash with NA -- not a valid code in metadata
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Land_cover = ifelse(Land_cover == "-", NA, Land_cover))
+```
+
+#### `n/a` values
+
+```{r}
+#| eval: false
+# Inspect rows with n/a
+snowsurvey_csv %>%
+  filter(Land_cover == "n/a") %>%
+  View()
+```
+
+Same pattern. We replace with NA.
+
+```{r}
+# Replace n/a with NA -- means not available
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Land_cover = ifelse(Land_cover == "n/a", NA, Land_cover))
+```
+
+#### `unk` values
+
+```{r}
+#| eval: false
+# Inspect the row with unk
+snowsurvey_csv %>%
+  filter(Land_cover == "unk") %>%
+  View()
+```
+
+One row, same row as the `unk` in `Water_cover`. We replace with NA.
+
+```{r}
+# Replace unk with NA -- unknown, no value to work with
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Land_cover = ifelse(Land_cover == "unk", NA, Land_cover))
+```
+
+**Note about `<1`:** Just like `Water_cover`, `Land_cover` has no `<1`
+values, so we do not need that step here either.
+
+### Going numeric
+
+Check that only NAs are left as non-numeric:
+
+```{r}
+# Confirm only NAs remain before converting
+snowsurvey_fixed %>%
+  count(Land_cover) %>%
+  filter(is.na(as.numeric(Land_cover)))
+```
+
+Good. We can convert:
+
+```{r}
+# Convert to numeric
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Land_cover = as.numeric(Land_cover))
+```
+
+We have a numeric column now 🎉
+
+### Further cleaning
+
+Check for values above 100:
+
+```{r}
+# Check for values above 100
+snowsurvey_fixed %>%
+  filter(Land_cover > 100)
+```
+
+No values above 100 in `Land_cover` ✅
+
+Let's check for negative values:
+
+```{r}
+# Check for negative values
+snowsurvey_fixed %>%
+  filter(Land_cover < 0)
+```
+
+There are two negative rows. Percent cover of exposed land cannot be
+negative -- that has no physical meaning in the real world.
+
+- The row with `-298` is the same row we saw earlier with `Water_cover = 353`.
+  As discussed above, both values are clearly wrong due to a data entry
+  error. We already set `Water_cover` to NA. We set `Land_cover` to NA here
+  for the same reason.
+
+- The row with `-100` has `Snow_cover = NA`, `Water_cover = 0`, and
+  `Total_cover = 100`. If we trusted the total and tried to work backward,
+  Snow + Land = 100, and with Land = -100 that would require Snow = 200,
+  which is also impossible. So there is no internally consistent way to
+  recover this row. We set `Land_cover` to NA.
+
+In both cases, setting to NA is the safest choice because making up a value
+would introduce error into any analysis that uses this data.
+
+```{r}
+# Set negative values to NA
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Land_cover = ifelse(Land_cover < 0, NA, Land_cover))
+```
+
+Same assumption as `Water_cover`: the metadata does not say values must be
+whole numbers, but decimal values like 1.5 or 2.75 are unlikely to reflect
+real field precision. We round to whole integers.
+
+```{r}
+# Check for decimal values before rounding
+unique(snowsurvey_fixed$Land_cover)
+```
+
+```{r}
+# Round to whole numbers
+snowsurvey_fixed$Land_cover <- round(snowsurvey_fixed$Land_cover)
+# Confirm no decimals remain
+unique(snowsurvey_fixed$Land_cover)
+```
+
+No negative values detected ✅
+
+---
+
+## Inferring missing values and fixing `Total_cover`
+
+### Why we can fill in some missing values
+
+The metadata says `Total_cover` is the sum of `Snow_cover`, `Water_cover`,
+and `Land_cover`, and it should always equal 100. This makes sense because
+the three cover types are meant to account for 100% of the ground surface.
+
+This gives us a useful way to recover some missing values. If a row has a
+valid number in two of the three cover columns and NA in the third, we can
+work out the missing value:
+
+`missing value = 100 - (sum of the other two)`
+
+For example, if `Snow_cover = 80` and `Water_cover = 10` and `Land_cover`
+is NA, then `Land_cover` must be `100 - 80 - 10 = 10`.
+
+We apply this rule only when exactly one column is missing. If two or all
+three are missing, we do not have enough information and we leave them as NA.
+We also check that the inferred value falls between 0 and 100. If it does
+not, the two known values are already inconsistent and we should not trust
+the inferred one.
+
+One important assumption here: we trust that the two known values are
+correct. If they were themselves recorded with errors, the inferred value
+would also be wrong. We accept this risk because we have no other
+information to go on.
+
+Across the whole dataset, this rule lets us recover 96 missing values.
+
+```{r}
+# Infer missing value when exactly one cover column is NA
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(
+    # Count NAs across the three cover columns
+    na_count = is.na(Snow_cover) + is.na(Water_cover) + is.na(Land_cover),
+
+    # Sum of the non-NA cover values
+    known_sum = rowSums(cbind(
+      ifelse(is.na(Snow_cover),  0, Snow_cover),
+      ifelse(is.na(Water_cover), 0, Water_cover),
+      ifelse(is.na(Land_cover),  0, Land_cover)
+    )),
+
+    # Fill Snow_cover if it is the only missing value
+    Snow_cover = ifelse(
+      na_count == 1 & is.na(Snow_cover) &
+        (100 - known_sum) >= 0 & (100 - known_sum) <= 100,
+      100 - known_sum,
+      Snow_cover
+    ),
+
+    # Fill Water_cover if it is the only missing value
+    Water_cover = ifelse(
+      na_count == 1 & is.na(Water_cover) &
+        (100 - known_sum) >= 0 & (100 - known_sum) <= 100,
+      100 - known_sum,
+      Water_cover
+    ),
+
+    # Fill Land_cover if it is the only missing value
+    Land_cover = ifelse(
+      na_count == 1 & is.na(Land_cover) &
+        (100 - known_sum) >= 0 & (100 - known_sum) <= 100,
+      100 - known_sum,
+      Land_cover
+    )
+  ) %>%
+  # Drop helper columns
+  select(-na_count, -known_sum)
+```
+
+### Recompute `Total_cover`
+
+Now we recompute `Total_cover` directly from the three cleaned cover columns.
+We do this for two reasons:
+
+1. The original `Total_cover` column had its own non-numeric values like `.`,
+   `-`, and `n/a`. Recomputing fixes those automatically.
+2. After our cleaning, some rows now have different values for the three
+   cover columns than before (the 96 recovered values, plus the rows we set
+   to NA). Recomputing makes sure `Total_cover` reflects the current state
+   of the data, not the original raw state.
+
+If a row still has any NA in the three cover columns after recovery, its
+`Total_cover` will also be NA. That is the correct behavior because we
+cannot give a reliable total if we are missing one of the parts.
+
+```{r}
+# Recompute Total_cover from the three cleaned columns
+snowsurvey_fixed <- snowsurvey_fixed %>%
+  mutate(Total_cover = Snow_cover + Water_cover + Land_cover)
+```
+
+Let's check the result:
+
+```{r}
+# Check the distribution of Total_cover values
+snowsurvey_fixed %>%
+  count(Total_cover) %>%
+  arrange(desc(n))
+```
+
+Most rows have a total of 100, which is what the metadata says we should
+expect. Some rows have totals other than 100. The metadata states the total
+"should always sum to 100," but this appears to be an expectation rather
+than something that was enforced when the data were collected. We cannot
+correct these rows without knowing what the true values should be. For
+example, 1,281 rows have all three covers recorded as 0, giving a total of
+0. These appear to be real field observations -- possibly from early in the
+season before any snow, water, or land was visible -- where the observer
+recorded 0 for each cover type but did not update the total. We leave them
+as is and accept that some rows will not meet the metadata expectation.
+
+Let's write the cleaned file to a csv:
+
+```{r}
+# Create output folder if needed
+dir.create(datadir_processed, showWarnings = FALSE)
+
+# Save the cleaned dataset
+write_csv(snowsurvey_fixed, file.path(datadir_processed, "all_cover_fixed_AakritiPoudel.csv"))
+```
